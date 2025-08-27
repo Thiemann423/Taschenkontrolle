@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Taschenkontrolle</title>
+  <style>
+    body{font-family:system-ui,Arial;margin:20px;max-width:900px}
+    .card{border:1px solid #ddd;border-radius:8px;padding:12px;margin:12px 0}
+    button{padding:12px 18px;border-radius:8px;font-size:18px;cursor:pointer}
+    input{padding:10px;font-size:16px;margin:6px 0;width:320px}
+    ul{padding-left:18px}
+  </style>
+</head>
+<body>
+  <h1>👜 Taschenkontrolle</h1>
+  <p>Drücke den Button. Bei <b>rot</b> erfolgt eine Kontrolle; bei <b>grün</b> geht’s weiter.</p>
+
+  <div class="card">
+    <button id="btnDraw">Kontrolle-Button</button>
+    <div id="status" style="margin-top:10px"></div>
+    <div id="msg" style="margin-top:6px"></div>
+  </div>
+
+  <div id="scanBox" class="card" style="display:none">
+    <h3>RFID scannen</h3>
+    <div>
+      <div>Mitarbeiter</div>
+      <input id="emp" placeholder="Mitarbeiter-RFID" />
+      <div id="empOK"></div>
+    </div>
+    <div style="margin-top:8px">
+      <div>Wachdienst</div>
+      <input id="guard" placeholder="Wachdienst-RFID" />
+      <div id="guardOK"></div>
+    </div>
+    <button id="saveBtn" style="margin-top:10px">Kontrolle speichern</button>
+  </div>
+
+  <div class="card">
+    <h3>Letzte Kontrollen</h3>
+    <ul id="events"></ul>
+  </div>
+
+  <div class="card">
+    <h3>Dashboard</h3>
+    <div>Kontrollen gesamt: <b id="total">0</b></div>
+    <div style="margin-top:8px">
+      <b>Nach Wachdienst</b>
+      <ul id="byGuard"></ul>
+    </div>
+    <div style="margin-top:8px">
+      <b>Nach Mitarbeiter</b>
+      <ul id="byEmp"></ul>
+    </div>
+  </div>
+
+  <script>
+    // === API-Basis anpassen, wenn Backend woanders läuft (z. B. GitHub Pages Domain) ===
+    const API = (window.API_BASE || 'http://localhost:8000');
+
+    const qs = (s) => document.querySelector(s);
+
+    let color = null;
+    let employee = null;
+    let guard = null;
+
+    async function api(path, opts={}) {
+      const res = await fetch(API + path, opts);
+      if (!res.ok) throw new Error(await res.text());
+      return res.json();
+    }
+
+    async function draw() {
+      employee = guard = null;
+      qs('#empOK').textContent = '';
+      qs('#guardOK').textContent = '';
+      try {
+        const r = await api('/api/draw', {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({})
+        });
+        color = r.color;
+        qs('#status').innerHTML = 'Status: <b>' + color.toUpperCase() + '</b>';
+        if (color === 'green') {
+          qs('#msg').textContent = 'Grün: Keine Kontrolle. Weiter geht’s.';
+          qs('#scanBox').style.display = 'none';
+        } else {
+          qs('#msg').textContent = 'Rot: Bitte Kontrolle durchführen und beide Karten scannen.';
+          qs('#scanBox').style.display = 'block';
+          qs('#emp').focus();
+        }
+        refresh();
+      } catch(e){ qs('#msg').textContent = 'Fehler: ' + e.message; }
+    }
+
+    async function scanRFID(rfid, who) {
+      try {
+        const p = await api('/api/scan', {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ rfid })
+        });
+        if (who === 'emp') { employee = p; qs('#empOK').textContent = '✅ ' + p.name + ' (' + p.rfid + ')'; }
+        else { guard = p; qs('#guardOK').textContent = '✅ ' + p.name + ' (' + p.rfid + ')'; }
+      } catch(e){ qs('#msg').textContent = 'RFID nicht erkannt: ' + e.message; }
+    }
+
+    async function saveEvent() {
+      if (!employee || !guard) { qs('#msg').textContent = 'Bitte erst beide Karten scannen.'; return; }
+      try {
+        await api('/api/event', {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ employee_rfid: employee.rfid, guard_rfid: guard.rfid })
+        });
+        qs('#msg').textContent = 'Kontrolle protokolliert.';
+        qs('#scanBox').style.display = 'none';
+        color = null; employee = guard = null;
+        refresh();
+      } catch(e){ qs('#msg').textContent = 'Fehler beim Speichern: ' + e.message; }
+    }
+
+    async function refresh() {
+      try {
+        const ev = await api('/api/events?limit=20');
+        qs('#events').innerHTML = ev.map(e => (
+          `<li>#${e.id} – ${new Date(e.timestamp).toLocaleString()} – ${e.employee_name||'Unbekannt'} ↔ ${e.guard_name||'Unbekannt'} – ${e.status}</li>`
+        )).join('');
+        const st = await api('/api/stats');
+        qs('#total').textContent = st.total_checks;
+        qs('#byGuard').innerHTML = st.by_guard.map(g => `<li>${g.name} – ${g.count}</li>`).join('');
+        qs('#byEmp').innerHTML = st.by_employee.map(x => `<li>${x.name} – ${x.count}</li>`).join('');
+      } catch(e){ /* noch kein Backend? Dann schweigen wir. */ }
+    }
+
+    // Events & RFID-"Keyboard-Wedge"
+    qs('#btnDraw').addEventListener('click', draw);
+    qs('#saveBtn').addEventListener('click', saveEvent);
+    qs('#emp').addEventListener('keydown', (e) => { if (e.key==='Enter' && e.target.value.trim()) scanRFID(e.target.value.trim(), 'emp'); });
+    qs('#guard').addEventListener('keydown', (e) => { if (e.key==='Enter' && e.target.value.trim()) scanRFID(e.target.value.trim(), 'guard'); });
+
+    refresh();
+  </script>
+</body>
+</html>
