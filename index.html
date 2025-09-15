@@ -63,6 +63,10 @@
           <div class="row">
             <button id="btnRed" class="btn red">Ampel ROT</button>
             <button id="btnGreen" class="btn green">Ampel GRÜN</button>
+            <label class="row" style="gap:8px;align-items:center;margin-left:8px">
+              <input id="hardwareOnly" type="checkbox" />
+              <span class="meta">Nur Hardware</span>
+            </label>
           </div>
         </div>
 
@@ -486,6 +490,38 @@
         if (e.code === 'F13') { setManual('red');  set('ROT erkannt (F13) – ' + new Date().toLocaleTimeString('de-DE')); e.preventDefault(); }
         if (e.code === 'F14') { setManual('green'); set('GRÜN erkannt (F14) – ' + new Date().toLocaleTimeString('de-DE')); e.preventDefault(); }
       });
+    })();
+
+    // ===== Hardware-only toggle (disables manual buttons) =====
+    (function(){
+      const KEY = 'bag_hw_only_v1';
+      const el = document.getElementById('hardwareOnly');
+      const bRed = document.getElementById('btnRed');
+      const bGreen = document.getElementById('btnGreen');
+      const hint = document.getElementById('hidHint');
+
+      function apply(){
+        const on = !!el?.checked;
+        window._hardwareOnly = on;
+        if (bRed) bRed.disabled = on;
+        if (bGreen) bGreen.disabled = on;
+        localStorage.setItem(KEY, on ? '1' : '0');
+        if (hint){
+          hint.textContent = on ? 'Hardware: Nur-Hardware aktiv – warte auf F13/F14 (STOP/GO)'
+                                : 'Hardware: warte auf F13/F14 (STOP/GO) – manuell erlaubt';
+        }
+      }
+      if (el){
+        el.checked = localStorage.getItem(KEY) === '1';
+        apply();
+        el.addEventListener('change', apply);
+      }
+      bRed?.addEventListener('click', (e)=>{
+        if (window._hardwareOnly){ e.preventDefault(); e.stopPropagation(); try{ toast('Nur-Hardware aktiv'); }catch{} }
+      }, true);
+      bGreen?.addEventListener('click', (e)=>{
+        if (window._hardwareOnly){ e.preventDefault(); e.stopPropagation(); try{ toast('Nur-Hardware aktiv'); }catch{} }
+      }, true);
     })();
   </script>
 </body>
