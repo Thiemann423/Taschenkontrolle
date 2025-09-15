@@ -1,0 +1,528 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Taschenkontrolle – HID + Passwortschutz</title>
+  <style>
+    :root{ --bg:#f6f7fb;--card:#fff;--ink:#111;--muted:#667085;--success:#10b981;--danger:#ef4444;--border:#e6e7ee;--shadow:0 8px 30px rgba(16,24,40,.08) }
+    *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--ink);font-family:Inter,system-ui,Segoe UI,Roboto,Arial,sans-serif}
+    .container{max-width:1200px;margin:0 auto;padding:24px}
+    header{display:flex;align-items:center;gap:14px;margin-bottom:16px}
+    .logo{width:44px;height:44px;border-radius:12px;display:grid;place-items:center;background:linear-gradient(135deg,#ffd5d5,#ffe7c2);box-shadow:var(--shadow)}
+    h1{font-size:28px;margin:0} .sub{color:var(--muted)}
+    .grid{display:grid;gap:18px;grid-template-columns:1.1fr .9fr} @media (max-width:1100px){.grid{grid-template-columns:1fr}}
+    .grid--two{ grid-template-columns: 1fr 1fr !important; }
+    @media (max-width:900px){ .grid--two{ grid-template-columns:1fr !important; } }
+    .protectedWrap{ position: relative; }
+    .card{background:var(--card);border:1px solid var(--border);border-radius:16px;box-shadow:var(--shadow);padding:18px}
+    .row{display:flex;gap:12px;flex-wrap:wrap;align-items:center}
+    .btn{padding:12px 16px;border-radius:12px;border:1px solid var(--border);background:#fff;cursor:pointer;font-size:16px;box-shadow:var(--shadow)}
+    .btn:disabled{opacity:.5;cursor:not-allowed} .btn.red{background:var(--danger);color:#fff;border-color:#dc3d3d} .btn.green{background:var(--success);color:#fff;border-color:#0ea271} .btn.ghost{background:#fff;color:#000}
+    input[type=text],input[type=date],input[type=password]{padding:10px 12px;border:1px solid var(--border);border-radius:10px;background:#fff}
+    input[disabled]{background:#f2f2f2}
+    .light{width:120px;height:120px;border-radius:50%;border:10px solid #fff;box-shadow:0 0 0 1px var(--border), 0 10px 30px rgba(0,0,0,.15) inset;background:radial-gradient(circle at 35% 30%, rgba(255,255,255,.9),rgba(255,255,255,.2) 35%, transparent 36%), #ddd;transition:background .2s}
+    .light.red{background:radial-gradient(circle at 35% 30%, #fff5, transparent 40%), #ff4d4f} .light.green{background:radial-gradient(circle at 35% 30%, #fff5, transparent 40%), #22c55e}
+    .status{display:inline-flex;align-items:center;gap:8px;padding:8px 10px;border-radius:10px;border:1px solid var(--border)}
+    .dot{width:10px;height:10px;border-radius:50%} .dot.gray{background:#bbb} .dot.red{background:#ef4444} .dot.green{background:#10b981}
+    .meta{color:var(--muted);font-size:14px}
+    .stepper{display:flex;gap:10px;align-items:center;margin-top:10px} .step{display:flex;align-items:center;gap:10px}
+    .step .n{width:28px;height:28px;border-radius:50%;display:grid;place-items:center;border:2px solid var(--border);background:#fff} .step.done .n{background:#10b981;border-color:#10b981;color:#fff}
+    .div{height:2px;width:28px;background:var(--border)}
+    table{width:100%;border-collapse:separate;border-spacing:0 8px} th,td{text-align:left;padding:12px;background:#fff;border-top:1px solid var(--border);border-bottom:1px solid var(--border)}
+    th:first-child,td:first-child{border-left:1px solid var(--border);border-top-left-radius:10px;border-bottom-left-radius:10px} th:last-child,td:last-child{border-right:1px solid var(--border);border-top-right-radius:10px;border-bottom-right-radius:10px}
+    .pill{display:inline-flex;align-items:center;gap:8px;border:1px solid var(--border);border-radius:999px;padding:6px 10px;background:#fff}
+    .timebox{display:grid;grid-template-columns:160px 1fr;gap:8px;align-items:center;margin-top:10px} .time{font-variant-numeric:tabular-nums}
+    .toast{position:fixed;right:18px;bottom:18px;background:#111;color:#fff;padding:12px 14px;border-radius:12px;box-shadow:var(--shadow);opacity:0;transform:translateY(8px);transition:all .25s} .toast.show{opacity:1;transform:none}
+    .lockPanel{border:1px dashed var(--border);background:#fffbe6;padding:12px;border-radius:12px;margin:8px 0}
+    #cardsLockRow{ grid-column: 1 / -1; justify-content: center !important; margin: 4px 0 8px 0; }
+  </style>
+</head>
+<body>
+  <div id="app" class="container">
+    <header>
+      <div class="logo">👜</div>
+      <div>
+        <h1>Taschenkontrolle</h1>
+        <div class="sub">Erfassung (Ampel + Scans + Speichern) & Dashboard (Suche) – Karten unten passwortgeschützt, 90-Tage-Löschfrist. HID: F13/F14.</div>
+      </div>
+    </header>
+
+    <!-- ERFASSUNG -->
+    <div class="grid">
+      <div class="card">
+        <div class="row" style="justify-content:space-between">
+          <div class="row">
+            <div id="light" class="light" title="Ampel"></div>
+            <div>
+              <div id="statusText" class="status"><span class="dot gray"></span><span>Bereit</span></div>
+              <div class="meta">Mit den Tasten rechts rot/grün setzen.</div>
+              <div class="meta" id="hidHint">Hardware: warte auf F13/F14 (STOP/GO)</div>
+            </div>
+          </div>
+          <div class="row">
+            <button id="btnRed" class="btn red">Ampel ROT</button>
+            <button id="btnGreen" class="btn green">Ampel GRÜN</button>
+            <label class="row" style="gap:8px;align-items:center;margin-left:8px">
+              <input id="hardwareOnly" type="checkbox" />
+              <span class="meta">Nur Hardware</span>
+            </label>
+          </div>
+        </div>
+
+        <div class="stepper">
+          <div class="step" id="s1"><div class="n">1</div><div>Ampel setzen</div></div>
+          <div class="div"></div>
+          <div class="step" id="s2"><div class="n">2</div><div>Wachdienst scannen</div></div>
+          <div class="div"></div>
+          <div class="step" id="s3"><div class="n">3</div><div>Mitarbeiter scannen</div></div>
+          <div class="div"></div>
+          <div class="step" id="s4"><div class="n">4</div><div>Speichern</div></div>
+        </div>
+
+        <div class="timebox" id="timeBox" style="display:none">
+          <div class="meta">Beginn (Erfassung):</div>
+          <div id="timeStart" class="time">–</div>
+          <div class="meta">Gespeichert um:</div>
+          <div id="timeSaved" class="time">–</div>
+        </div>
+
+        <div id="scanArea" style="margin-top:14px; display:none">
+          <div class="row">
+            <div>
+              <div class="pill">🛡️ Wachdienst</div>
+              <div><input id="guard" type="text" placeholder="Wachdienst-RFID" autocomplete="off"/></div>
+              <div class="meta" id="guardOK"></div>
+            </div>
+            <div>
+              <div class="pill">👤 Mitarbeiter</div>
+              <div><input id="emp" type="text" placeholder="Mitarbeiter-RFID" autocomplete="off" disabled/></div>
+              <div class="meta" id="empOK"></div>
+            </div>
+          </div>
+          <div class="row" style="margin-top:10px">
+            <button id="saveBtn" class="btn" disabled>Kontrolle speichern</button>
+            <button id="resetBtn" class="btn ghost">Zurücksetzen</button>
+            <span id="saveInfo" class="meta"></span>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3 style="margin:0">System</h3>
+        <div class="meta">Namen aus <code>Personal.txt</code> (im selben Ordner). Wenn nicht vorhanden, wird ein Fallback genutzt.</div>
+      </div>
+    </div>
+
+    <!-- KARTEN (geschützt) -->
+    <div class="grid grid--two protectedWrap" style="margin-top:18px">
+
+      <!-- Lock-Button mittig -->
+      <div class="row" id="cardsLockRow" style="display:none">
+        <button id="cardsLockBtn" class="btn ghost">🔒 Bereich sperren</button>
+      </div>
+
+      <!-- Kontrollen -->
+      <div class="card">
+        <h3 style="margin-top:0">Kontrollen (suchbar)</h3>
+
+        <div id="controlsLock" class="lockPanel">
+          <div class="row" style="justify-content:space-between;align-items:center">
+            <div class="meta">Geschützter Bereich – bitte Passwort eingeben.</div>
+            <div class="row">
+              <input id="cardsPwLogin1" type="password" placeholder="Passwort" />
+              <button id="cardsLoginBtn1" class="btn">Anmelden</button>
+            </div>
+          </div>
+          <div id="cardsMsg1" class="meta" style="color:#b42318;margin-top:6px"></div>
+        </div>
+
+        <div id="controlsContent" style="display:none">
+          <div class="row" style="gap:8px;margin:6px 0 12px 0">
+            <label class="meta">Von <input id="fFrom" type="date"></label>
+            <label class="meta">Bis <input id="fTo" type="date"></label>
+            <input id="fGuard" type="text" placeholder="Wachdienst (Name oder RFID)" />
+            <input id="fEmp" type="text" placeholder="Mitarbeiter (Name oder RFID)" />
+            <button id="btnClear" class="btn ghost">Zurücksetzen</button>
+          </div>
+          <div style="overflow:auto">
+            <table id="tbl">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Zeit (gespeichert)</th>
+                  <th>Beginn</th>
+                  <th>Mitarbeiter</th>
+                  <th>Wachdienst</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody id="tblBody"><tr><td colspan="6" class="meta">Keine Daten</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- Dashboard -->
+      <div class="card">
+        <h3 style="margin-top:0">Dashboard</h3>
+
+        <div id="dashboardLock" class="lockPanel">
+          <div class="row" style="justify-content:space-between;align-items:center">
+            <div class="meta">Geschützter Bereich – bitte Passwort eingeben.</div>
+            <div class="row">
+              <input id="cardsPwLogin2" type="password" placeholder="Passwort" />
+              <button id="cardsLoginBtn2" class="btn">Anmelden</button>
+            </div>
+          </div>
+          <div id="cardsMsg2" class="meta" style="color:#b42318;margin-top:6px"></div>
+        </div>
+
+        <div id="dashboardContent" style="display:none">
+          <div class="row" style="gap:24px">
+            <div>
+              <div class="meta">Kontrollen gesamt (gefiltert)</div>
+              <div id="total" style="font-size:28px;font-weight:700">0</div>
+            </div>
+            <div>
+              <div class="meta">Letzte Kontrolle (gefiltert)</div>
+              <div id="lastWhen" style="font-weight:600">–</div>
+            </div>
+          </div>
+          <div class="row" style="margin-top:12px; align-items:flex-start">
+            <div style="flex:1">
+              <div class="meta" style="font-weight:700;margin-bottom:6px">Nach Wachdienst</div>
+              <ul id="byGuard" class="list"></ul>
+            </div>
+            <div style="flex:1">
+              <div class="meta" style="font-weight:700;margin-bottom:6px">Nach Mitarbeiter</div>
+              <ul id="byEmp" class="list"></ul>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <div id="toast" class="toast"></div>
+
+  <script>
+    /* ======= Namen laden (Personal.txt) ======= */
+    const EMBEDDED = [
+      // ["0330545615","Thiemann, Merten"], // Beispiel
+    ];
+    let PERSONS = new Map(EMBEDDED);
+    const nameOf = (rfid) => PERSONS.get(String(rfid)) || null;
+
+    async function loadPersonsFromFile(){
+      try{
+        const res = await fetch('Personal.txt', {cache:'no-store'});
+        if(!res.ok) throw new Error('Personal.txt nicht gefunden');
+        const txt = await res.text();
+        const map = new Map(EMBEDDED);
+        for (const line of txt.split(/\r?\n/)) {
+          const row = line.trim();
+          if(!row || !row.includes(';')) continue;
+          const [rfid, name] = row.split(';');
+          if (rfid && name) map.set(rfid.trim(), name.trim());
+        }
+        PERSONS = map;
+      }catch(e){
+        console.warn('Namen-Fallback (EMBEDDED):', e.message);
+      }
+    }
+
+    /* ======= Utilities ======= */
+    const STORE_KEY = 'bagcheck_events_protected_v1';
+    const loadLocal = () => { try { return JSON.parse(localStorage.getItem(STORE_KEY) || '[]'); } catch { return []; } };
+    const saveLocal = (arr) => localStorage.setItem(STORE_KEY, JSON.stringify(arr));
+
+    // === Data retention (90 Tage) ===
+    const RETENTION_DAYS = 90;
+    const RETENTION_MS = RETENTION_DAYS * 24 * 60 * 60 * 1000;
+    function purgeRetention(arr){
+      const cutoff = Date.now() - RETENTION_MS;
+      const keep = [];
+      let removed = 0;
+      for (const x of arr){
+        const tsStr = x.timestamp || x.time || x.date || x.created_at;
+        const ts = new Date(tsStr).getTime();
+        if (isNaN(ts) || ts >= cutoff) keep.push(x);
+        else removed++;
+      }
+      if (removed) saveLocal(keep);
+      return { data: keep, removed };
+    }
+
+    const qs = (s) => document.querySelector(s);
+    const toDE = (d) => new Date(d).toLocaleString('de-DE', { day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit', second:'2-digit' });
+    function setLight(color){ const el = qs('#light'); el.classList.remove('red','green'); if(color) el.classList.add(color); }
+    function setStatus(text, color='gray'){ qs('#statusText').innerHTML = `<span class="dot ${color}"></span><span>${text}</span>`; }
+    function stepDone(id, done){ qs('#'+id).classList.toggle('done', !!done); }
+    function toast(t){ const el = qs('#toast'); el.textContent = t; el.classList.add('show'); setTimeout(()=>el.classList.remove('show'), 2200); }
+
+    /* ======= State & Start ======= */
+    let ALL_EVENTS = loadLocal();
+    // Auto-Purge on load
+    (function(){
+      const pr = purgeRetention(ALL_EVENTS);
+      if (pr.removed){ ALL_EVENTS = pr.data; try { toast(`Automatisch gelöscht: ${pr.removed} Einträge (> ${RETENTION_DAYS} Tage)`); } catch(e){} }
+    })();
+
+    let VIEW_EVENTS = [];
+    window._color=null; window._employee=null; window._guard=null; window._startedAt=null;
+
+    function enableSave(){ const can = window._color==='red' && !!window._guard && !!window._employee; qs('#saveBtn').disabled = !can; }
+    function showStart(ts){ qs('#timeBox').style.display='grid'; qs('#timeStart').textContent = toDE(ts); qs('#timeSaved').textContent = '–'; }
+    function showSaved(ts){ qs('#timeSaved').textContent = toDE(ts); }
+
+    function setManual(color){
+      window._employee=null; window._guard=null;
+      qs('#emp').value=''; qs('#guard').value='';
+      qs('#empOK').textContent=''; qs('#guardOK').textContent='';
+      qs('#emp').disabled = true;
+      stepDone('s2', false); stepDone('s3', false); stepDone('s4', false);
+
+      window._color = color;
+      setLight(color);
+      stepDone('s1', !!color);
+      if (color === 'green' || !color){
+        setStatus('Grün: Keine Kontrolle. Weiter', 'green'); qs('#scanArea').style.display='none'; qs('#timeBox').style.display='none';
+      } else {
+        setStatus('Rot: Erst Wachdienst scannen!', 'red'); qs('#scanArea').style.display='block'; window._startedAt = new Date(); showStart(window._startedAt); try { qs('#guard').focus(); } catch(e){}
+      }
+      enableSave();
+    }
+
+    function scanRFID(rfid, who){
+      if (!rfid) return;
+      if (who==='emp' && !window._guard){ toast('Bitte zuerst Wachdienst scannen.'); return; }
+      const name = nameOf(rfid);
+      const obj = name ? { rfid, name } : { rfid };
+      if (who==='guard'){
+        window._guard = obj; qs('#guardOK').innerHTML = name ? ('✅ <b>'+name+'</b> ('+rfid+')') : ('✅ RFID: '+rfid); stepDone('s2', true); qs('#emp').disabled=false; qs('#emp').focus();
+      } else {
+        window._employee = obj; qs('#empOK').innerHTML = name ? ('✅ <b>'+name+'</b> ('+rfid+')') : ('✅ RFID: '+rfid); stepDone('s3', true);
+      }
+      enableSave();
+    }
+
+    function onSave(){
+      if (!(window._color==='red' && window._guard && window._employee)) return;
+      const savedAt = new Date();
+      const arr = loadLocal();
+      const id = arr.length ? (arr[arr.length-1].id + 1) : 1;
+      const evt = {
+        id,
+        timestamp: savedAt.toISOString(),
+        started_at: window._startedAt?.toISOString() || savedAt.toISOString(),
+        employee_rfid: window._employee.rfid,
+        guard_rfid: window._guard.rfid,
+        employee_name: window._employee.name || nameOf(window._employee.rfid),
+        guard_name: window._guard.name || nameOf(window._guard.rfid),
+        status:'OK'
+      };
+      arr.push(evt);
+      saveLocal(arr);
+      showSaved(savedAt);
+      toast('Lokal gespeichert (' + savedAt.toLocaleTimeString('de-DE') + ')');
+      ALL_EVENTS = arr;
+
+      // Purge after save to enforce retention
+      (function(){ const pr = purgeRetention(ALL_EVENTS); if (pr.removed){ ALL_EVENTS = pr.data; } })();
+
+      applyFilters();
+
+      // Reset
+      window._employee=null; window._guard=null; window._color=null; window._startedAt=null;
+      qs('#scanArea').style.display='none'; setLight(null); setStatus('Bereit','gray');
+      stepDone('s2',false); stepDone('s3',false); stepDone('s4',true); enableSave();
+    }
+
+    function parseDateInput(v){ if (!v) return null; const d = new Date(v + "T00:00:00"); return isNaN(d) ? null : d; }
+    function parseDateEnd(v){ if (!v) return null; const d = new Date(v + "T23:59:59"); return isNaN(d) ? null : d; }
+    const norm = s => (s||'').toString().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[,.]/g,' ').replace(/\s+/g,' ').trim();
+
+    function applyFilters(){
+      const fFrom = parseDateInput(document.getElementById('fFrom')?.value);
+      const fTo   = parseDateEnd(document.getElementById('fTo')?.value);
+      const fG    = norm(document.getElementById('fGuard')?.value);
+      const fE    = norm(document.getElementById('fEmp')?.value);
+
+      const out = [];
+      for (const x of ALL_EVENTS){
+        const ts = new Date(x.timestamp);
+        if (fFrom && ts < fFrom) continue;
+        if (fTo && ts > fTo) continue;
+
+        const gName = x.guard_name || nameOf(x.guard_rfid) || ('RFID:'+x.guard_rfid);
+        const eName = x.employee_name || nameOf(x.employee_rfid) || ('RFID:'+x.employee_rfid);
+
+        const hayG = norm(gName + ' ' + String(x.guard_rfid||''));  // Name+RFID
+        const hayE = norm(eName + ' ' + String(x.employee_rfid||''));
+
+        if (fG && !hayG.includes(fG)) continue;
+        if (fE && !hayE.includes(fE)) continue;
+
+        out.push(Object.assign({}, x, {_gName: gName, _eName: eName, _ts: ts}));
+      }
+
+      out.sort((a,b)=> b._ts - a._ts);
+
+      const tbody = document.getElementById('tblBody');
+      if (!out.length) tbody.innerHTML = `<tr><td colspan="6" class="meta">Keine Treffer</td></tr>`;
+      else tbody.innerHTML = out.map(x => (`
+        <tr>
+          <td>${x.id ?? ''}</td>
+          <td>${toDE(x._ts)}</td>
+          <td>${toDE(x.started_at || x._ts)} </td>
+          <td>${x._eName}</td>
+          <td>${x._gName}</td>
+          <td>${x.status || 'OK'}</td>
+        </tr>`)).join('');
+
+      document.getElementById('total').textContent = out.length;
+      document.getElementById('lastWhen').textContent = out.length ? toDE(out[0]._ts) : '–';
+
+      const gAgg = new Map(), eAgg = new Map();
+      for (const x of out){ gAgg.set(x._gName, (gAgg.get(x._gName)||0)+1); eAgg.set(x._eName, (eAgg.get(x._eName)||0)+1); }
+      document.getElementById('byGuard').innerHTML = Array.from(gAgg.entries()).map(([n,c])=>`<li>${n} – ${c}</li>`).join('');
+      document.getElementById('byEmp').innerHTML   = Array.from(eAgg.entries()).map(([n,c])=>`<li>${n} – ${c}</li>`).join('');
+    }
+
+    // Wire UI (Erfassung + Suche)
+    document.getElementById('btnRed').addEventListener('click', ()=>setManual('red'));
+    document.getElementById('btnGreen').addEventListener('click', ()=>setManual('green'));
+    document.getElementById('guard').addEventListener('keydown', e => { if (e.key==='Enter'){ scanRFID(e.target.value.trim(),'guard'); }});
+    document.getElementById('emp').addEventListener('keydown', e => { if (e.key==='Enter'){ scanRFID(e.target.value.trim(),'emp'); }});
+    document.getElementById('saveBtn').addEventListener('click', onSave);
+    document.getElementById('resetBtn').addEventListener('click', ()=>{ window._employee=null; window._guard=null; document.getElementById('scanArea').style.display='none'; setLight(null); setStatus('Bereit','gray'); });
+
+    for (const id of ['fFrom','fTo','fGuard','fEmp']){
+      const el = document.getElementById(id);
+      ['input','change','keydown'].forEach(ev=> el?.addEventListener(ev, ()=>{ if (event.type!=='keydown' || event.key==='Enter') applyFilters(); }));
+    }
+    document.getElementById('btnClear').addEventListener('click', ()=>{ document.getElementById('fFrom').value=''; document.getElementById('fTo').value=''; document.getElementById('fGuard').value=''; document.getElementById('fEmp').value=''; applyFilters(); });
+
+    // ===== Card-level password gate (v2: locked on reload + manual lock button) =====
+    (function(){
+      const NS = 'bagcheck_cards_auth_v2';
+      const H = NS+':hash', S = NS+':salt';
+      let authed = false; // resets on reload
+
+      const hex = (buf) => Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('');
+      async function sha256Hex(s){ const buf = new TextEncoder().encode(s); const h = await crypto.subtle.digest('SHA-256', buf); return hex(h); }
+      function randHex(n=16){ const a=new Uint8Array(n); crypto.getRandomValues(a); return Array.from(a).map(b=>b.toString(16).padStart(2,'0')).join(''); }
+      const getH=()=>localStorage.getItem(H), getS=()=>localStorage.getItem(S);
+      const setHS=(h,s)=>{ localStorage.setItem(H,h); localStorage.setItem(S,s); };
+
+      const els = {
+        cLock: document.getElementById('controlsLock'),
+        dLock: document.getElementById('dashboardLock'),
+        cCont: document.getElementById('controlsContent'),
+        dCont: document.getElementById('dashboardContent'),
+        in1: document.getElementById('cardsPwLogin1'),
+        in2: document.getElementById('cardsPwLogin2'),
+        btn1: document.getElementById('cardsLoginBtn1'),
+        btn2: document.getElementById('cardsLoginBtn2'),
+        msg1: document.getElementById('cardsMsg1'),
+        msg2: document.getElementById('cardsMsg2'),
+        lockRow: document.getElementById('cardsLockRow'),
+        lockBtn: document.getElementById('cardsLockBtn'),
+      };
+
+      async function ensurePassword(){
+        if (getH() && getS()) return;
+        const pw = prompt('Erster Start: Passwort für Einsicht in Kontrollen/Dashboard festlegen (mind. 8 Zeichen):');
+        if (!pw || pw.length<8){ alert('Kein Passwort gesetzt. Bereich bleibt gesperrt, bis ein Passwort gesetzt wurde.'); return; }
+        const salt = randHex(16); const hash = await sha256Hex(salt+'|'+pw);
+        setHS(hash,salt); alert('Passwort gespeichert. Bitte anmelden.');
+      }
+
+      function render(){
+        if (authed){
+          els.cLock.style.display='none'; els.dLock.style.display='none';
+          els.cCont.style.display='block'; els.dCont.style.display='block';
+          els.lockRow.style.display='flex';
+          try{ applyFilters(); }catch{}
+        }else{
+          els.cLock.style.display='block'; els.dLock.style.display='block';
+          els.cCont.style.display='none'; els.dCont.style.display='none';
+          els.lockRow.style.display='none';
+        }
+      }
+
+      async function tryLogin(pw){
+        const h=getH(), s=getS(); if(!h||!s) return false;
+        const check = await sha256Hex(s+'|'+pw);
+        return check===h;
+      }
+
+      function wire(){
+        els.btn1?.addEventListener('click', async ()=>{
+          els.msg1.textContent=''; const ok = await tryLogin((els.in1.value||'').trim());
+          if(ok){ authed=true; els.in1.value=''; render(); } else { els.msg1.textContent='Falsches Passwort.'; }
+        });
+        els.btn2?.addEventListener('click', async ()=>{
+          els.msg2.textContent=''; const ok = await tryLogin((els.in2.value||'').trim());
+          if(ok){ authed=true; els.in2.value=''; render(); } else { els.msg2.textContent='Falsches Passwort.'; }
+        });
+        els.in1?.addEventListener('keydown', e=>{ if(e.key==='Enter') els.btn1.click(); });
+        els.in2?.addEventListener('keydown', e=>{ if(e.key==='Enter') els.btn2.click(); });
+        els.lockBtn?.addEventListener('click', ()=>{ authed=false; render(); });
+      }
+
+      (async function init(){
+        await loadPersonsFromFile();     // Namen laden
+        await ensurePassword();          // einmalig Passwort anlegen
+        wire();
+        authed=false;                    // immer gesperrt starten
+        render();
+      })();
+    })();
+
+    // ===== HID integration (PA 400 -> USB-Box -> F13/F14) =====
+    (function(){
+      const el = document.getElementById('hidHint');
+      function set(msg){ if (el) el.textContent = 'Hardware: ' + msg; }
+      window.addEventListener('keydown', (e) => {
+        if (e.code === 'F13') { setManual('red');  set('ROT erkannt (F13) – ' + new Date().toLocaleTimeString('de-DE')); e.preventDefault(); }
+        if (e.code === 'F14') { setManual('green'); set('GRÜN erkannt (F14) – ' + new Date().toLocaleTimeString('de-DE')); e.preventDefault(); }
+      });
+    })();
+
+    // ===== Hardware-only toggle (disables manual buttons) =====
+    (function(){
+      const KEY = 'bag_hw_only_v1';
+      const el = document.getElementById('hardwareOnly');
+      const bRed = document.getElementById('btnRed');
+      const bGreen = document.getElementById('btnGreen');
+      const hint = document.getElementById('hidHint');
+
+      function apply(){
+        const on = !!el?.checked;
+        window._hardwareOnly = on;
+        if (bRed) bRed.disabled = on;
+        if (bGreen) bGreen.disabled = on;
+        localStorage.setItem(KEY, on ? '1' : '0');
+        if (hint){
+          hint.textContent = on ? 'Hardware: Nur-Hardware aktiv – warte auf F13/F14 (STOP/GO)'
+                                : 'Hardware: warte auf F13/F14 (STOP/GO) – manuell erlaubt';
+        }
+      }
+      if (el){
+        el.checked = localStorage.getItem(KEY) === '1';
+        apply();
+        el.addEventListener('change', apply);
+      }
+      bRed?.addEventListener('click', (e)=>{
+        if (window._hardwareOnly){ e.preventDefault(); e.stopPropagation(); try{ toast('Nur-Hardware aktiv'); }catch{} }
+      }, true);
+      bGreen?.addEventListener('click', (e)=>{
+        if (window._hardwareOnly){ e.preventDefault(); e.stopPropagation(); try{ toast('Nur-Hardware aktiv'); }catch{} }
+      }, true);
+    })();
+  </script>
+</body>
+</html>
