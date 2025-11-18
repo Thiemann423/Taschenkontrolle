@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Taschenkontrolle – HID + Passwortschutz</title>
+  <title>Taschenkontrolle – Pi-API + HID + Passwortschutz</title>
   <style>
     :root{ --bg:#f6f7fb;--card:#fff;--ink:#111;--muted:#667085;--success:#10b981;--danger:#ef4444;--border:#e6e7ee;--shadow:0 8px 30px rgba(16,24,40,.08) }
     *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--ink);font-family:Inter,system-ui,Segoe UI,Roboto,Arial,sans-serif}
@@ -44,7 +44,7 @@
       <div class="logo">👜</div>
       <div>
         <h1>Taschenkontrolle</h1>
-        <div class="sub">Erfassung (Ampel + Scans + Speichern) & Dashboard (Suche) – Karten unten passwortgeschützt, 90-Tage-Löschfrist. HID: F13/F14.</div>
+        <div class="sub">Erfassung (Ampel + Scans + Speichern) & Dashboard (Suche) – Karten unten passwortgeschützt, 90-Tage-Löschfrist. HID/PI-API.</div>
       </div>
     </header>
 
@@ -57,7 +57,7 @@
             <div>
               <div id="statusText" class="status"><span class="dot gray"></span><span>Bereit</span></div>
               <div class="meta">Mit den Tasten rechts rot/grün setzen.</div>
-              <div class="meta" id="hidHint">Hardware: warte auf F13/F14 (STOP/GO)</div>
+              <div class="meta" id="hidHint">Hardware: warte auf F13/F14 (STOP/GO) oder Pi-API</div>
             </div>
           </div>
           <div class="row">
@@ -110,7 +110,31 @@
 
       <div class="card">
         <h3 style="margin:0">System</h3>
-        <div class="meta">Namen aus <code>Personal.txt</code> (im selben Ordner). Wenn nicht vorhanden, wird ein Fallback genutzt.</div>
+        <div class="meta">Namen aus <code>Personal.txt</code> (im selben Ordner) <b>oder</b> vom Pi-Backend (<code>/api/scan</code>). Ampelzustand vom Pi via <code>/api/state</code>.</div>
+        <div class="row" style="margin-top:10px; gap:10px">
+          <span class="meta">API-Basis:</span>
+          <input id="apiBase" type="text" value="http://localhost:8000" style="min-width:280px">
+          <button id="applyApi" class="btn">Übernehmen</button>
+          <label class="row" style="gap:6px">
+            <input id="forceMock" type="checkbox">
+            <span class="meta">Mock-Fallback erzwingen</span>
+          </label>
+          <span id="apiStatus" class="meta">offline (Mock aktiv)</span>
+        </div>
+
+        <div class="row" style="align-items:center; gap:10px; margin-top:12px">
+          <div class="pill">🛡️ Wachdienst-Status</div><div class="meta">F15=AN / F16=AUS (Schlüssel)</div>
+          <select id="roundDur">
+            <option value="5">5 min</option>
+            <option value="10" selected>10 min</option>
+            <option value="15">15 min</option>
+            <option value="30">30 min</option>
+            <option value="60">60 min</option>
+          </select>
+          <button id="roundStart" class="btn">Rundgang starten</button>
+          <button id="roundStop" class="btn ghost" disabled>Beenden</button>
+          <span id="roundInfo" class="meta">Rundgang: inaktiv</span>
+        </div>
       </div>
     </div>
 
@@ -208,10 +232,45 @@
   <div id="toast" class="toast"></div>
 
   <script>
+    /* ======= API / Backend Settings ======= */
+    const LS_API = 'bag_api_base_v1';
+    const LS_MOCK = 'bag_force_mock_v1';
+    let API_BASE = localStorage.getItem(LS_API) || 'http://localhost:8000';
+    let FORCE_MOCK = localStorage.getItem(LS_MOCK) === '1';
+
+    const apiBaseInput = document.getElementById('apiBase');
+    const applyApiBtn  = document.getElementById('applyApi');
+    const forceMockChk = document.getElementById('forceMock');
+    const apiStatusEl  = document.getElementById('apiStatus');
+
+    apiBaseInput.value = API_BASE;
+    forceMockChk.checked = FORCE_MOCK;
+
+    applyApiBtn.addEventListener('click', ()=>{
+      API_BASE = apiBaseInput.value.trim() || API_BASE;
+      localStorage.setItem(LS_API, API_BASE);
+      toast('API-Basis übernommen');
+    });
+    forceMockChk.addEventListener('change', ()=>{
+      FORCE_MOCK = !!forceMockChk.checked;
+      localStorage.setItem(LS_MOCK, FORCE_MOCK ? '1':'0');
+      toast(FORCE_MOCK ? 'Mock erzwungen' : 'Mock deaktiviert');
+    });
+
+    async function apiFetch(path, opt){
+      if (!API_BASE || FORCE_MOCK) throw new Error('mock');
+      const ctrl = new AbortController();
+      const t = setTimeout(()=>ctrl.abort(), 3500);
+      try{
+        const r = await fetch(API_BASE + path, Object.assign({signal:ctrl.signal}, opt||{}));
+        clearTimeout(t);
+        if(!r.ok) throw new Error('http '+r.status);
+        return r;
+      }catch(e){ clearTimeout(t); throw e; }
+    }
+
     /* ======= Namen laden (Personal.txt) ======= */
-    const EMBEDDED = [
-      // ["0330545615","Thiemann, Merten"], // Beispiel
-    ];
+    const EMBEDDED = [];
     let PERSONS = new Map(EMBEDDED);
     const nameOf = (rfid) => PERSONS.get(String(rfid)) || null;
 
@@ -238,18 +297,14 @@
     const loadLocal = () => { try { return JSON.parse(localStorage.getItem(STORE_KEY) || '[]'); } catch { return []; } };
     const saveLocal = (arr) => localStorage.setItem(STORE_KEY, JSON.stringify(arr));
 
-    // === Data retention (90 Tage) ===
     const RETENTION_DAYS = 90;
     const RETENTION_MS = RETENTION_DAYS * 24 * 60 * 60 * 1000;
     function purgeRetention(arr){
       const cutoff = Date.now() - RETENTION_MS;
-      const keep = [];
-      let removed = 0;
+      const keep = []; let removed = 0;
       for (const x of arr){
-        const tsStr = x.timestamp || x.time || x.date || x.created_at;
-        const ts = new Date(tsStr).getTime();
-        if (isNaN(ts) || ts >= cutoff) keep.push(x);
-        else removed++;
+        const ts = new Date(x.timestamp || x.time || x.created_at).getTime();
+        if (isNaN(ts) || ts >= cutoff) keep.push(x); else removed++;
       }
       if (removed) saveLocal(keep);
       return { data: keep, removed };
@@ -264,11 +319,7 @@
 
     /* ======= State & Start ======= */
     let ALL_EVENTS = loadLocal();
-    // Auto-Purge on load
-    (function(){
-      const pr = purgeRetention(ALL_EVENTS);
-      if (pr.removed){ ALL_EVENTS = pr.data; try { toast(`Automatisch gelöscht: ${pr.removed} Einträge (> ${RETENTION_DAYS} Tage)`); } catch(e){} }
-    })();
+    (function(){ const pr = purgeRetention(ALL_EVENTS); if (pr.removed){ ALL_EVENTS = pr.data; try{toast(`Automatisch gelöscht: ${pr.removed} Einträge (> ${RETENTION_DAYS} Tage)`);}catch{}} })();
 
     let VIEW_EVENTS = [];
     window._color=null; window._employee=null; window._guard=null; window._startedAt=null;
@@ -278,27 +329,41 @@
     function showSaved(ts){ qs('#timeSaved').textContent = toDE(ts); }
 
     function setManual(color){
+      if (window._roundActive && color === 'red'){ try{ toast('Rundgang aktiv – ROT wird ignoriert'); }catch{} color = 'green'; }
       window._employee=null; window._guard=null;
       qs('#emp').value=''; qs('#guard').value='';
       qs('#empOK').textContent=''; qs('#guardOK').textContent='';
       qs('#emp').disabled = true;
       stepDone('s2', false); stepDone('s3', false); stepDone('s4', false);
 
-      window._color = color;
-      setLight(color);
-      stepDone('s1', !!color);
+      window._color = color; setLight(color); stepDone('s1', !!color);
       if (color === 'green' || !color){
-        setStatus('Grün: Keine Kontrolle. Weiter', 'green'); qs('#scanArea').style.display='none'; qs('#timeBox').style.display='none';
+        setStatus('Grün: Keine Kontrolle. Weiter','green'); qs('#scanArea').style.display='none'; qs('#timeBox').style.display='none';
       } else {
-        setStatus('Rot: Erst Wachdienst scannen!', 'red'); qs('#scanArea').style.display='block'; window._startedAt = new Date(); showStart(window._startedAt); try { qs('#guard').focus(); } catch(e){}
+        setStatus('Rot: Erst Wachdienst scannen!','red'); qs('#scanArea').style.display='block'; window._startedAt = new Date(); showStart(window._startedAt); try{ qs('#guard').focus(); }catch{}
       }
       enableSave();
     }
 
-    function scanRFID(rfid, who){
+    async function lookupNameViaApi(rfid){
+      try{
+        const r = await apiFetch('/api/scan', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({rfid})});
+        const j = await r.json();
+        return j?.name || null;
+      }catch(e){ return null; }
+    }
+
+    async function scanRFID(rfid, who){
       if (!rfid) return;
       if (who==='emp' && !window._guard){ toast('Bitte zuerst Wachdienst scannen.'); return; }
-      const name = nameOf(rfid);
+
+      // 1) Pi-API versuchen (wenn aktiv), sonst lokale Datei
+      let name = null;
+      if (!FORCE_MOCK){
+        name = await lookupNameViaApi(rfid);
+      }
+      if (!name){ name = nameOf(rfid); }
+
       const obj = name ? { rfid, name } : { rfid };
       if (who==='guard'){
         window._guard = obj; qs('#guardOK').innerHTML = name ? ('✅ <b>'+name+'</b> ('+rfid+')') : ('✅ RFID: '+rfid); stepDone('s2', true); qs('#emp').disabled=false; qs('#emp').focus();
@@ -323,18 +388,12 @@
         guard_name: window._guard.name || nameOf(window._guard.rfid),
         status:'OK'
       };
-      arr.push(evt);
-      saveLocal(arr);
-      showSaved(savedAt);
+      arr.push(evt); saveLocal(arr); showSaved(savedAt);
       toast('Lokal gespeichert (' + savedAt.toLocaleTimeString('de-DE') + ')');
       ALL_EVENTS = arr;
-
-      // Purge after save to enforce retention
       (function(){ const pr = purgeRetention(ALL_EVENTS); if (pr.removed){ ALL_EVENTS = pr.data; } })();
-
       applyFilters();
 
-      // Reset
       window._employee=null; window._guard=null; window._color=null; window._startedAt=null;
       qs('#scanArea').style.display='none'; setLight(null); setStatus('Bereit','gray');
       stepDone('s2',false); stepDone('s3',false); stepDone('s4',true); enableSave();
@@ -359,7 +418,7 @@
         const gName = x.guard_name || nameOf(x.guard_rfid) || ('RFID:'+x.guard_rfid);
         const eName = x.employee_name || nameOf(x.employee_rfid) || ('RFID:'+x.employee_rfid);
 
-        const hayG = norm(gName + ' ' + String(x.guard_rfid||''));  // Name+RFID
+        const hayG = norm(gName + ' ' + String(x.guard_rfid||''));  
         const hayE = norm(eName + ' ' + String(x.employee_rfid||''));
 
         if (fG && !hayG.includes(fG)) continue;
@@ -391,7 +450,7 @@
       document.getElementById('byEmp').innerHTML   = Array.from(eAgg.entries()).map(([n,c])=>`<li>${n} – ${c}</li>`).join('');
     }
 
-    // Wire UI (Erfassung + Suche)
+    // Wire UI
     document.getElementById('btnRed').addEventListener('click', ()=>setManual('red'));
     document.getElementById('btnGreen').addEventListener('click', ()=>setManual('green'));
     document.getElementById('guard').addEventListener('keydown', e => { if (e.key==='Enter'){ scanRFID(e.target.value.trim(),'guard'); }});
@@ -405,11 +464,11 @@
     }
     document.getElementById('btnClear').addEventListener('click', ()=>{ document.getElementById('fFrom').value=''; document.getElementById('fTo').value=''; document.getElementById('fGuard').value=''; document.getElementById('fEmp').value=''; applyFilters(); });
 
-    // ===== Card-level password gate (v2: locked on reload + manual lock button) =====
+    /* ===== Passwortschutz (unverändert) ===== */
     (function(){
       const NS = 'bagcheck_cards_auth_v2';
       const H = NS+':hash', S = NS+':salt';
-      let authed = false; // resets on reload
+      let authed = false;
 
       const hex = (buf) => Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('');
       async function sha256Hex(s){ const buf = new TextEncoder().encode(s); const h = await crypto.subtle.digest('SHA-256', buf); return hex(h); }
@@ -474,15 +533,106 @@
       }
 
       (async function init(){
-        await loadPersonsFromFile();     // Namen laden
-        await ensurePassword();          // einmalig Passwort anlegen
+        await loadPersonsFromFile();
+        await ensurePassword();
         wire();
-        authed=false;                    // immer gesperrt starten
+        authed=false;
         render();
       })();
     })();
 
-    // ===== HID integration (PA 400 -> USB-Box -> F13/F14) =====
+    /* ===== Rundgang (mit optionalem POST an Pi) ===== */
+    (function(){
+      const KEY = 'bag_round_until_v1';
+      const info = document.getElementById('roundInfo');
+      const startBtn = document.getElementById('roundStart');
+      const stopBtn  = document.getElementById('roundStop');
+      const durSel   = document.getElementById('roundDur');
+      const btnRed   = document.getElementById('btnRed');
+      let timer = null;
+
+      function formatCountdown(ms){
+        if (ms <= 0) return '0:00';
+        const s = Math.floor(ms/1000);
+        const m = Math.floor(s/60);
+        const r = s % 60;
+        return m + ':' + String(r).padStart(2,'0');
+      }
+
+      function updateUI(active, untilMs){
+        window._roundActive = !!active;
+        if (active){
+          startBtn && (startBtn.disabled = true);
+          stopBtn  && (stopBtn.disabled  = false);
+          durSel   && (durSel.disabled   = true);
+          btnRed   && (btnRed.disabled   = true);
+          const until = new Date(untilMs);
+          const left = untilMs - Date.now();
+          if (info) info.textContent = 'Rundgang: aktiv – endet um ' + until.toLocaleTimeString('de-DE') + ' (Rest ' + formatCountdown(left) + ')';
+        }else{
+          startBtn && (startBtn.disabled = false);
+          stopBtn  && (stopBtn.disabled  = true);
+          durSel   && (durSel.disabled   = false);
+          const hwOnly = localStorage.getItem('bag_hw_only_v1') === '1';
+          btnRed   && (btnRed.disabled   = hwOnly);
+          if (info) info.textContent = 'Rundgang: inaktiv';
+        }
+      }
+
+      function clearTimer(){ if (timer){ clearInterval(timer); timer = null; }}
+
+      function tick(){
+        const untilMs = parseInt(localStorage.getItem(KEY) || '0', 10);
+        if (!untilMs){ clearTimer(); updateUI(false); return; }
+        const left = untilMs - Date.now();
+        if (left <= 0){
+          localStorage.removeItem(KEY);
+          clearTimer(); updateUI(false);
+          try{ toast('Rundgang beendet'); setLight(null); setStatus('Bereit','gray'); }catch{}
+          // Pi rundgang AUS
+          try{ apiFetch('/api/round',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({on:false})}); }catch{}
+        }else{
+          updateUI(true, untilMs);
+        }
+      }
+
+      function start(){
+        const mins = parseInt(durSel?.value || '10', 10);
+        const untilMs = Date.now() + mins*60*1000;
+        localStorage.setItem(KEY, String(untilMs));
+        try{
+          document.getElementById('scanArea').style.display='none';
+          window._employee=null; window._guard=null; window._color=null; window._startedAt=null;
+          setLight('green');
+          setStatus('Rundgang aktiv: Ampel wird auf Grün erzwungen.','green');
+          ['s2','s3','s4'].forEach(id=>document.getElementById(id)?.classList.remove('done'));
+        }catch{}
+        tick();
+        clearTimer(); timer = setInterval(tick, 1000);
+        try{ toast('Rundgang gestartet ('+mins+' min)'); }catch{}
+        // Pi rundgang AN
+        try{ apiFetch('/api/round',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({on:true})}); }catch{}
+      }
+
+      function stop(){
+        localStorage.removeItem(KEY);
+        tick(); clearTimer();
+        try{ setLight(null); setStatus('Bereit','gray'); }catch{}
+        // Pi rundgang AUS
+        try{ apiFetch('/api/round',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({on:false})}); }catch{}
+      }
+
+      startBtn?.addEventListener('click', start);
+      stopBtn?.addEventListener('click', stop);
+      window._roundStart = start;
+      window._roundStop  = stop;
+
+      tick(); clearTimer();
+      if (localStorage.getItem(KEY)) timer = setInterval(tick, 1000);
+      window._roundActive = !!localStorage.getItem(KEY);
+    })();
+
+    /* ===== HID (F13/F14) ===== */
     (function(){
       const el = document.getElementById('hidHint');
       function set(msg){ if (el) el.textContent = 'Hardware: ' + msg; }
@@ -492,7 +642,16 @@
       });
     })();
 
-    // ===== Hardware-only toggle (disables manual buttons) =====
+    /* ===== HID Rundgang (F15/F16) ===== */
+    (function(){
+      const hint = document.getElementById('hidHint');
+      window.addEventListener('keydown', (e) => {
+        if (e.code === 'F15'){ try{ window._roundStart?.(); if(hint) hint.textContent = 'Hardware: Rundgang AN (F15)'; }catch{} e.preventDefault(); }
+        if (e.code === 'F16'){ try{ window._roundStop?.();  if(hint) hint.textContent = 'Hardware: Rundgang AUS (F16)'; }catch{} e.preventDefault(); }
+      });
+    })();
+
+    /* ===== Hardware-only toggle ===== */
     (function(){
       const KEY = 'bag_hw_only_v1';
       const el = document.getElementById('hardwareOnly');
@@ -507,8 +666,8 @@
         if (bGreen) bGreen.disabled = on;
         localStorage.setItem(KEY, on ? '1' : '0');
         if (hint){
-          hint.textContent = on ? 'Hardware: Nur-Hardware aktiv – warte auf F13/F14 (STOP/GO)'
-                                : 'Hardware: warte auf F13/F14 (STOP/GO) – manuell erlaubt';
+          hint.textContent = on ? 'Hardware: Nur-Hardware aktiv – warte auf F13/F14 (STOP/GO) oder Pi-API'
+                                : 'Hardware: warte auf F13/F14 (STOP/GO) oder Pi-API – manuell erlaubt';
         }
       }
       if (el){
@@ -516,12 +675,38 @@
         apply();
         el.addEventListener('change', apply);
       }
-      bRed?.addEventListener('click', (e)=>{
-        if (window._hardwareOnly){ e.preventDefault(); e.stopPropagation(); try{ toast('Nur-Hardware aktiv'); }catch{} }
-      }, true);
-      bGreen?.addEventListener('click', (e)=>{
-        if (window._hardwareOnly){ e.preventDefault(); e.stopPropagation(); try{ toast('Nur-Hardware aktiv'); }catch{} }
-      }, true);
+      bRed?.addEventListener('click', (e)=>{ if (window._hardwareOnly){ e.preventDefault(); e.stopPropagation(); try{ toast('Nur-Hardware aktiv'); }catch{} }}, true);
+      bGreen?.addEventListener('click', (e)=>{ if (window._hardwareOnly){ e.preventDefault(); e.stopPropagation(); try{ toast('Nur-Hardware aktiv'); }catch{} }}, true);
+    })();
+
+    /* ===== Pi-API Poller ===== */
+    (function(){
+      let ok = false;
+      const setOk = (online) => {
+        ok = online;
+        apiStatusEl.textContent = online ? 'online (Pi verbunden)' : (FORCE_MOCK ? 'offline (Mock erzwungen)' : 'offline (Mock aktiv)');
+      };
+
+      async function poll(){
+        try{
+          const r = await apiFetch('/api/state');
+          const j = await r.json();
+          setOk(true);
+
+          // Farbe + Rundgang aus Backend übernehmen
+          const color = (j.color==='red') ? 'red' : 'green';
+          window._roundActive = !!j.round_active;
+
+          // bei Rundgang -> ROT ignorieren
+          if (window._roundActive && color==='red') setManual('green'); else setManual(color);
+
+        }catch(e){
+          setOk(false);
+        }
+      }
+
+      // Alle 800 ms, aber nur wenn nicht explizit Mock erzwungen
+      setInterval(()=>{ if (!FORCE_MOCK) poll(); }, 800);
     })();
   </script>
 </body>
